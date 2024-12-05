@@ -11,12 +11,46 @@ contract RumourCastNFT is ERC1155, Ownable {
     uint256 public constant SUPPLY_PER_TOKEN = 1000;
     string public baseURI = "https://rumourcast.xyz/nft/{id}.json";
     bytes32 public immutable seed;
+    
+    uint256 public maxMintLimit;
+    mapping(uint256 => uint256) public tokenMintCount;
+    uint256 public mintPrice;
 
-    // New mapping to store tokenId to castId
     mapping(uint256 => string) public tokenIdToCastId;
 
-    constructor(bytes32 _seed) ERC1155("") Ownable(msg.sender) {
+    event MintLimitUpdated(uint256 newLimit);
+    event MintPriceUpdated(uint256 newPrice);
+    event PaymentWithdrawn(address to, uint256 amount);
+
+    constructor(
+        bytes32 _seed,
+        uint256 _initialMintLimit,
+        uint256 _initialMintPrice
+    ) ERC1155("") Ownable(msg.sender) {
         seed = _seed;
+        maxMintLimit = _initialMintLimit;
+        mintPrice = _initialMintPrice;
+    }
+
+    function setMintLimit(uint256 newLimit) external onlyOwner {
+        require(newLimit >= maxMintLimit, "New limit below current max limit");
+        maxMintLimit = newLimit;
+        emit MintLimitUpdated(newLimit);
+    }
+
+    function setMintPrice(uint256 newPrice) external onlyOwner {
+        mintPrice = newPrice;
+        emit MintPriceUpdated(newPrice);
+    }
+
+    function withdrawPayments(address payable to) external onlyOwner {
+        uint256 balance = address(this).balance;
+        require(balance > 0, "No balance to withdraw");
+        
+        (bool success, ) = to.call{value: balance}("");
+        require(success, "Transfer failed");
+        
+        emit PaymentWithdrawn(to, balance);
     }
 
     function setBaseURI(string memory newBaseURI) external onlyOwner {
@@ -67,12 +101,38 @@ contract RumourCastNFT is ERC1155, Ownable {
         return uint256(keccak256(abi.encodePacked(seed, castId)));
     }
 
-    function mint(address to, string memory castId) external {
+    function generateTokenId(string memory castId) external returns (uint256) {
         uint256 tokenId = computeTokenId(castId);
         require(bytes(tokenIdToCastId[tokenId]).length == 0, "Token ID already minted");
-        
+
         tokenIdToCastId[tokenId] = castId;
-        // TODO: Improve minting logic as needed
-        _mint(to, tokenId, SUPPLY_PER_TOKEN, "");
+
+        return tokenId;
+    }
+
+    function mint(address to, uint256 tokenId, uint256 quantity) external payable {
+        require(quantity > 0, "Quantity must be positive");
+        require(msg.value >= mintPrice * quantity, "Insufficient payment");
+        
+        string memory castId = tokenIdToCastId[tokenId];
+        require(bytes(castId).length != 0, "Token ID not minted");
+        
+        uint256 newMintCount = tokenMintCount[tokenId] + quantity;
+        require(newMintCount <= maxMintLimit, "Mint limit reached for token");
+        tokenMintCount[tokenId] = newMintCount;
+        
+        // Calculate and refund excess payment
+        uint256 requiredPayment = mintPrice * quantity;
+        uint256 excess = msg.value - requiredPayment;
+        if (excess > 0) {
+            (bool success, ) = msg.sender.call{value: excess}("");
+            require(success, "Refund failed");
+        }
+    
+        _mint(to, tokenId, quantity, "");
+    }
+
+    function getTokenMintCount(uint256 tokenId) external view returns (uint256) {
+        return tokenMintCount[tokenId];
     }
 }
